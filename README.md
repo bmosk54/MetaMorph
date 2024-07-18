@@ -1,2 +1,2 @@
 # MetaMorph
-NeuroMatch NeuroAI project
+MetaMorph: NeuroMatch NeuroAI project
