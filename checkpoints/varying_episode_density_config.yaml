@@ -1,0 +1,10 @@
+after_training: null
+agent: tonic.torch.agents.PPO(model=ppo_mlp_model(actor_sizes=(256, 256), critic_sizes=(256,256)))
+before_training: null
+environment: tonic.environments.ControlSuite("swimmer-swim_variable_episode_density")
+header: import tonic.torch
+name: swim_variable_episode_density
+parallel: 1
+seed: 0
+sequential: 1
+trainer: tonic.Trainer(steps=int(5e5),save_steps=int(1e5))
