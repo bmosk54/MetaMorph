@@ -1,0 +1,313 @@
+---
+title: "Worm Analysis"
+output: html_notebook
+---
+
+```{r setup, include=FALSE}
+# Load necessary libraries
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(caret)
+library(e1071) # For SVM
+library(viridis)
+library(gridExtra)
+library(transformr)
+library(gganimate)
+library(gifski)
+```
+
+```{r}
+
+# Set seed for reproducibility
+set.seed(123)
+
+
+# # GFP Data
+# Load the dataset
+data <- read.csv("Project/Data/GFP.csv")
+
+# Rename columns to remove dots for consistency
+names(data) <- gsub("\\.", "", names(data))
+
+# Extract neural activity data and behavior
+neural_data <- data %>%
+  select(starts_with("Neuron"))
+
+behavior_data <- data$behavior
+
+# View the structure of the extracted data
+str(neural_data)
+str(behavior_data)
+
+
+# # Train Predictive Model
+# Select relevant columns and ensure behavior is a factor
+relevant_data <- data %>%
+  select(Time, xmm, ymm, behavior, starts_with("Neuron1"):starts_with("Neuron56")) %>%
+  mutate(behavior = as.factor(behavior))
+
+# Calculate velocity as a derived feature
+relevant_data <- relevant_data %>%
+  mutate(velocity = c(0, sqrt(diff(xmm)^2 + diff(ymm)^2)))
+
+# Handle NA values by filling with 0
+relevant_data <- relevant_data %>%
+  mutate(across(everything(), ~ ifelse(is.na(.), 0, .)))
+
+# Split the data into training and testing sets
+trainIndex <- createDataPartition(relevant_data$behavior, p = .8, list = FALSE, times = 1)
+trainData <- relevant_data[trainIndex,]
+testData  <- relevant_data[-trainIndex,]
+
+# Ensure the levels of the behavior factor are consistent
+trainData$behavior <- factor(trainData$behavior)
+testData$behavior <- factor(testData$behavior, levels = levels(trainData$behavior))
+
+# Train a SVM model
+svm_model <- svm(behavior ~ ., data = trainData, kernel = "linear", scale = TRUE)
+
+# Make predictions on the test data
+testData$predicted_behavior <- predict(svm_model, testData)
+
+# Map numeric labels to behavior names
+behavior_mapping <- c("-1" = "reverse", "0" = "stop", "1" = "forward", "2" = "turn")
+testData$predicted_behavior_label <- behavior_mapping[as.character(testData$predicted_behavior)]
+testData$behavior_label <- behavior_mapping[as.character(testData$behavior)]
+
+# Handle unexpected predictions
+testData$predicted_behavior_label[is.na(testData$predicted_behavior_label)] <- "unknown"
+
+# View the updated data frame with descriptive behavior names
+testData$predicted_behavior
+
+# View the confusion matrix to evaluate the performance
+confusionMatrix(testData$predicted_behavior, testData$behavior)
+
+# # Worm Data Processing Function
+
+# Function to clean and process worm data
+clean_worm_data <- function(file_path, worm_number) {
+  # Load the data
+  data <- read.csv(file_path)
+  
+  # Inspect column names
+  print(names(data))
+  
+  # Replace specific column names
+  names(data) <- gsub("x\\(mm\\)", "xmm", names(data))
+  names(data) <- gsub("y\\(mm\\)", "ymm", names(data))
+  names(data) <- gsub("\\.", "", names(data)) # Remove any remaining dots
+
+  # Ensure there is a column named 'Time'
+  if ("Times" %in% names(data)) {
+    data <- data %>% rename(Time = Times)
+  } else {
+    stop("The 'Time.s.' column is not found.")
+  }
+
+  # Process the data
+  data <- data %>%
+    mutate(across(everything(), ~ ifelse(is.na(.), 0, .))) %>%
+    mutate(velocity = c(0, sqrt(diff(xmm)^2 + diff(ymm)^2)),
+           velocity_x = c(0, diff(xmm)),
+           velocity_y = c(0, diff(ymm)),
+           worm = worm_number)
+  
+  return(data)
+}
+
+# Load and process data for all worms
+worm1_data <- clean_worm_data("Project/Data/worm1.csv", 1)
+worm2_data <- clean_worm_data("Project/Data/worm2.csv", 2)
+worm3_data <- clean_worm_data("Project/Data/worm3.csv", 3)
+worm4_data <- clean_worm_data("Project/Data/worm4.csv", 4)
+
+# Use the trained SVM model to predict behaviors
+predict_worm_behavior <- function(worm_data, model, behavior_levels) {
+  worm_data$predicted_behavior <- predict(model, worm_data)
+  worm_data$predicted_behavior <- factor(worm_data$predicted_behavior, levels = behavior_levels)
+  if (nrow(worm_data) != length(worm_data$predicted_behavior)) {
+    stop("The number of predictions does not match the number of rows in the dataset.")
+  }
+  return(worm_data)
+}
+
+worm1_data <- predict_worm_behavior(worm1_data, svm_model, levels(trainData$behavior))
+worm2_data <- predict_worm_behavior(worm2_data, svm_model, levels(trainData$behavior))
+worm3_data <- predict_worm_behavior(worm3_data, svm_model, levels(trainData$behavior))
+worm4_data <- predict_worm_behavior(worm4_data, svm_model, levels(trainData$behavior))
+
+# # Combine All Worm Data
+
+# Combine the datasets
+combined_data <- bind_rows(worm1_data, worm2_data, worm3_data, worm4_data) %>%
+  select(Time, xmm, ymm, behavior, velocity, predicted_behavior, velocity_x, velocity_y, worm, starts_with("Neuron"))
+
+# View the combined data
+head(combined_data)
+
+# # Normalize GFP Data and Analyze Correlations
+# Normalize head positions
+normalize <- function(x) {
+  return((x - min(x, na.rm = TRUE)) / (max(x, na.rm = TRUE) - min(x, na.rm = TRUE)))
+}
+
+data <- data %>%
+  mutate(x_normalized = normalize(xmm),
+         y_normalized = normalize(ymm))
+
+# Calculate correlation for each neuron with behavior
+correlations <- sapply(neural_data, function(neuron) {
+  cor(neuron, behavior_data, use = "complete.obs")
+})
+
+correlation_df <- data.frame(Neuron = names(correlations), Correlation = correlations)
+print(correlation_df)
+
+# Function for bootstrapping
+bootstrap_correlation <- function(neuron_data, behavior_data, num_samples = 1000) {
+  n <- length(neuron_data)
+  bootstrapped_correlations <- replicate(num_samples, {
+    sample_indices <- sample(1:n, n, replace = TRUE)
+    sampled_neuron_data <- neuron_data[sample_indices]
+    sampled_behavior_data <- behavior_data[sample_indices]
+    cor(sampled_neuron_data, sampled_behavior_data, use = "complete.obs")
+  })
+  return(bootstrapped_correlations)
+}
+
+# Apply bootstrapping to each neuron
+significance_results <- lapply(names(neural_data), function(neuron) {
+  bootstrapped_correlations <- bootstrap_correlation(neural_data[[neuron]], behavior_data, num_samples = 1000)
+  original_correlation <- cor(neural_data[[neuron]], behavior_data, use = "complete.obs")
+  p_value <- mean(abs(bootstrapped_correlations) >= abs(original_correlation))
+  return(data.frame(Neuron = neuron, OriginalCorrelation = original_correlation, PValue = p_value))
+})
+
+significance_results_df <- do.call(rbind, significance_results)
+print(significance_results_df)
+
+# Plot correlations with significance
+ggplot(significance_results_df, aes(x = Neuron, y = OriginalCorrelation)) +
+  geom_point(aes(color = PValue < 0.05)) +
+  scale_color_manual(values = c("red", "blue")) +
+  labs(title = "Neural Correlation with Behavior",
+       x = "Neuron ID",
+       y = "Correlation Coefficient",
+       color = "Significant") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+# # Relative Signal Analysis (RSA)
+# Function to compute the Euclidean distance matrix
+compute_rdm <- function(data) {
+  dist_matrix <- as.matrix(dist(data, method = "euclidean"))
+  return(dist_matrix)
+}
+
+# Compute the RDM for the neural data
+neural_data <- relevant_data %>%
+  select(starts_with("Neuron"))
+
+rdm_neural <- compute_rdm(neural_data)
+
+# Create a hypothetical model RDM for comparison
+model_data <- matrix(rnorm(nrow(neural_data) * ncol(neural_data)), nrow = nrow(neural_data))
+model_rdm <- compute_rdm(model_data)
+
+# Function to compute the correlation between two RDMs
+compare_rdms <- function(rdm1, rdm2) {
+  rdm1_vector <- as.vector(rdm1)
+  rdm2_vector <- as.vector(rdm2)
+  correlation <- cor(rdm1_vector, rdm2_vector, method = "pearson")
+  return(correlation)
+}
+
+# Compare the neural RDM with the model RDM
+comparison_result <- compare_rdms(rdm_neural, model_rdm)
+print(comparison_result)
+
+# # Animations
+
+# Function to create and save animations
+create_and_save_animation <- function(data, worm_num) {
+  p1 <- ggplot(data, aes(x = xmm, y = ymm, color = Time)) +
+    geom_path() +
+    scale_color_viridis(option = "viridis", name = "Time") +
+    labs(title = paste("Worm", worm_num, "- Position in 2D Space"), x = "X Position (mm)", y = "Y Position (mm)") +
+    theme_minimal() +
+    transition_reveal(Time)
+  
+  p2 <- ggplot(data, aes(x = Time)) +
+    geom_line(aes(y = velocity_x, color = "Velocity X")) +
+    geom_line(aes(y = velocity_y, color = "Velocity Y")) +
+    labs(title = paste("Worm", worm_num, "- Velocity Over Time"), x = "Time (s)", y = "Velocity (mm/s)") +
+    scale_color_manual(values = c("blue", "orange")) +
+    theme_minimal() +
+    transition_reveal(Time)
+  
+  p3 <- ggplot(data, aes(x = Time, y = 1, fill = factor(behavior, levels = c("-1", "0", "1", "2")))) +
+    geom_tile() +
+    scale_fill_manual(values = c("red", "blue", "cyan", "brown"), name = "Behavior", labels = c("reverse", "stop", "forward", "turn")) +
+    labs(title = paste("Worm", worm_num, "- Behavior Over Time"), x = "Time (s)", y = NULL) +
+    theme_minimal() +
+    theme(axis.text.y = element_blank(), axis.ticks.y = element_blank()) +
+    transition_reveal(Time)
+  
+  anim_position <- animate(p1, nframes = 150, fps = 10, width = 800, height = 600, renderer = gifski_renderer())
+  anim_velocity <- animate(p2, nframes = 150, fps = 10, width = 800, height = 400, renderer = gifski_renderer())
+  anim_behavior <- animate(p3, nframes = 150, fps = 10, width = 800, height = 200, renderer = gifski_renderer())
+  
+  anim_save(paste("worm", worm_num, "_position_animation.gif", sep = ""), anim_position)
+  anim_save(paste("worm", worm_num, "_velocity_animation.gif", sep = ""), anim_velocity)
+  anim_save(paste("worm", worm_num, "_behavior_animation.gif", sep = ""), anim_behavior)
+}
+
+# Create and save animations for each worm
+create_and_save_animation(worm1_data, 1)
+create_and_save_animation(worm2_data, 2)
+create_and_save_animation(worm3_data, 3)
+create_and_save_animation(worm4_data, 4)
+
+# # Combined Worms Animation
+# Position animation
+p1 <- ggplot(combined_data, aes(x = xmm, y = ymm, color = Time, group = worm)) +
+  geom_path() +
+  scale_color_viridis(option = "viridis", name = "Time") +
+  labs(title = "Worms - Position in 2D Space", x = "X Position (mm)", y = "Y Position (mm)") +
+  theme_minimal() +
+  transition_reveal(Time) +
+  facet_wrap(~ worm)
+
+# Velocity animation
+p2 <- ggplot(combined_data, aes(x = Time, group = worm)) +
+  geom_line(aes(y = velocity_x, color = "Velocity X")) +
+  geom_line(aes(y = velocity_y, color = "Velocity Y")) +
+  labs(title = "Worms - Velocity Over Time", x = "Time (s)", y = "Velocity (mm/s)") +
+  scale_color_manual(values = c("blue", "orange")) +
+  theme_minimal() +
+  transition_reveal(Time) +
+  facet_wrap(~ worm)
+
+# Behavior animation
+p3 <- ggplot(combined_data, aes(x = Time, y = 1, fill = factor(behavior, levels = c("-1", "0", "1", "2")), group = worm)) +
+  geom_tile() +
+  scale_fill_manual(values = c("red", "blue", "cyan", "brown"), name = "Behavior", labels = c("reverse", "stop", "forward", "turn")) +
+  labs(title = "Worms - Behavior Over Time", x = "Time (s)", y = NULL) +
+  theme_minimal() +
+  theme(axis.text.y = element_blank(), axis.ticks.y = element_blank()) +
+  transition_reveal(Time) +
+  facet_wrap(~ worm)
+
+# Animate and save the plots
+anim_position <- animate(p1, nframes = 150, fps = 10, width = 1200, height = 600, renderer = gifski_renderer())
+anim_velocity <- animate(p2, nframes = 150, fps = 10, width = 1200, height = 400, renderer = gifski_renderer())
+anim_behavior <- animate(p3, nframes = 150, fps = 10, width = 1200, height = 200, renderer = gifski_renderer())
+
+# Save the animations
+anim_save("worms_position_animation.gif", anim_position)
+anim_save("worms_velocity_animation.gif", anim_velocity)
+anim_save("worms_behavior_animation.gif", anim_behavior)
+```
+
