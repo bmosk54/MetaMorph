@@ -1,0 +1,75 @@
+---
+title: "Neural Correlation Analysis"
+output: html_notebook
+---
+
+```{r}
+# Load necessary libraries
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(pheatmap)
+library(viridis)
+
+# Load the Excel file
+file_path <- "Project/Data/pnas.1507110112.sd01.xls"
+sheets <- c('Worm1', 'Worm2', 'Worm3', 'Worm4')
+
+# Function to load data from each sheet
+load_data <- function(sheet) {
+  read_excel(file_path, sheet = sheet)
+}
+
+# Load data for each worm
+data <- lapply(sheets, load_data)
+names(data) <- sheets
+
+# Clean and prepare data
+clean_data <- function(df) {
+  df <- df %>%
+    mutate(across(everything(), ~ as.numeric(gsub("[^0-9.-]", "", as.character(.)))))
+  return(df)
+}
+
+# Apply cleaning to each dataset
+data <- lapply(data, clean_data)
+
+# Function to compute correlation matrix
+compute_correlation <- function(df) {
+  neuron_data <- df %>% select(starts_with("Neuron"))
+  correlation_matrix <- cor(neuron_data, use = "complete.obs", method = "pearson")
+  return(correlation_matrix)
+}
+
+# Compute correlation matrices for each worm
+correlation_matrices <- lapply(data, compute_correlation)
+
+# Function to plot hierarchical clustering of correlation matrix
+plot_hierarchical_clustering <- function(correlation_matrix, worm_name) {
+  pheatmap(correlation_matrix, 
+           cluster_rows = TRUE, 
+           cluster_cols = TRUE, 
+           color = viridis(100, option = "A"), 
+           main = paste(worm_name, "- Hierarchical Clustering of Neuron Activity"))
+}
+
+# Plot correlation and hierarchical clustering for each worm
+for (sheet in sheets) {
+  plot_hierarchical_clustering(correlation_matrices[[sheet]], sheet)
+}
+
+# Plot and save correlation and hierarchical clustering for each worm
+output_dir <- "output/"
+
+# Create the output directory if it doesn't exist
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir)
+}
+
+for (sheet in sheets) {
+  output_file <- paste0(output_dir, "Hierarchical_Clustering_", sheet, ".png")
+  plot_and_save_hierarchical_clustering(correlation_matrices[[sheet]], sheet, output_file)
+}
+```
+

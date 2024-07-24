@@ -1,0 +1,117 @@
+---
+title: "RSA"
+output: html_notebook
+---
+
+
+```{r}
+# Load necessary libraries
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(reshape2)
+library(gridExtra)
+library(corrplot)
+library(viridis)
+library(tidyr)
+library(pheatmap)
+
+# Load the Excel file
+file_path <- "Project/Data/pnas.1507110112.sd01.xls"
+sheets <- c('Worm1', 'Worm2', 'Worm3', 'Worm4')
+
+# Function to load data from each sheet
+load_data <- function(sheet) {
+  read_excel(file_path, sheet = sheet)
+}
+
+# Load data for each worm
+data <- lapply(sheets, load_data)
+names(data) <- sheets
+
+# Clean and prepare data
+clean_data <- function(df) {
+  df <- df %>%
+    mutate(across(everything(), ~ as.numeric(gsub("[^0-9.-]", "", as.character(.)))))
+  return(df)
+}
+
+# Apply cleaning to each dataset
+data <- lapply(data, clean_data)
+
+# Extract neuron data and behavior labels from each sheet
+neuron_data <- list()
+behavior_labels <- list()
+
+for (sheet in sheets) {
+  df <- data[[sheet]]
+  
+  # Remove non-numeric columns
+  df <- df %>% select_if(is.numeric)
+  
+  # Extract neuron data from columns starting with "Neuron"
+  neuron_data[[sheet]] <- df %>% select(starts_with("Neuron"))
+  
+  # Extract behavior labels from the "behavior" column
+  behavior_labels[[sheet]] <- df$behavior
+}
+
+# Function to compute RSA
+compute_rsa <- function(neuron_data, behavior_labels) {
+  unique_behaviors <- unique(behavior_labels)
+  rsa_results <- list()
+  
+  for (behavior in unique_behaviors) {
+    # Select data for the current behavior
+    behavior_data <- neuron_data[behavior_labels == behavior, ]
+    
+    # Drop rows with NA values
+    behavior_data <- behavior_data %>% drop_na()
+    
+    # Compute the similarity matrix (using correlation)
+    similarity_matrix <- cor(behavior_data, use = "complete.obs", method = "pearson")
+    
+    rsa_results[[as.character(behavior)]] <- similarity_matrix
+  }
+  
+  return(rsa_results)
+}
+
+# Compute RSA results for each worm
+rsa_results <- list()
+
+for (sheet in sheets) {
+  rsa_results[[sheet]] <- compute_rsa(neuron_data[[sheet]], behavior_labels[[sheet]])
+}
+
+# Function to plot similarity matrix and save it
+plot_and_save_similarity_matrix <- function(matrix, title, output_file) {
+  pheatmap(matrix, 
+           cluster_rows = TRUE, 
+           cluster_cols = TRUE, 
+           color = viridis(100, option = "A"), 
+           main = title,
+           filename = output_file)
+}
+
+# Plot and save individual similarity matrices for each worm and behavior
+output_dir <- "output/"
+
+# Create the output directory if it doesn't exist
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir)
+}
+
+for (sheet in sheets) {
+  for (behavior in names(rsa_results[[sheet]])) {
+    if (!is.null(rsa_results[[sheet]][[behavior]])) {
+      output_file <- paste0(output_dir, "Worm_", sheet, "_Behavior_", behavior, ".png")
+      plot_and_save_similarity_matrix(rsa_results[[sheet]][[behavior]], 
+                                      paste("Worm", sheet, "- Behavior", behavior), 
+                                      output_file)
+    }
+  }
+}
+
+```
+
